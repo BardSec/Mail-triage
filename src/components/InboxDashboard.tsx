@@ -1,6 +1,7 @@
 import { FILTER_OPTIONS, SORT_OPTIONS, URGENCY_ORDER } from "../constants";
 import { EmailCard } from "./EmailCard";
-import type { Email, FilterBy, SortBy, TriageResult, Urgency } from "../types";
+import { AccountSwitcher } from "./AccountSwitcher";
+import type { Account, Email, FilterBy, SortBy, TriageResult, Urgency } from "../types";
 
 interface InboxDashboardProps {
   emails: Email[];
@@ -9,11 +10,17 @@ interface InboxDashboardProps {
   error: string | null;
   filter: FilterBy;
   sortBy: SortBy;
+  token: string;
+  accounts: Account[];
+  activeAccountId: string | null;
   onFilterChange: (f: FilterBy) => void;
   onSortChange: (s: SortBy) => void;
+  onMarkAsRead: (emailId: string) => void;
+  onDraftReply: (email: Email, triage: TriageResult) => void;
+  onAccountSwitch: (accountId: string) => void;
 }
 
-const STAT_BUTTON_BASE: React.CSSProperties = {
+const FILTER_BTN_BASE: React.CSSProperties = {
   padding: "5px 12px",
   borderRadius: 2,
   fontSize: 10,
@@ -30,8 +37,14 @@ export function InboxDashboard({
   error,
   filter,
   sortBy,
+  token,
+  accounts,
+  activeAccountId,
   onFilterChange,
   onSortChange,
+  onMarkAsRead,
+  onDraftReply,
+  onAccountSwitch,
 }: InboxDashboardProps) {
   const triageValues = Object.values(triageMap);
   const criticalCount = triageValues.filter((t) => t.urgency === "Critical").length;
@@ -69,12 +82,15 @@ export function InboxDashboard({
       <div
         style={{
           borderBottom: "1px solid #1a1d20",
-          padding: "16px 28px",
+          padding: "14px 28px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          gap: 16,
+          flexWrap: "wrap",
         }}
       >
+        {/* Brand */}
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
           <div
             style={{
@@ -83,6 +99,7 @@ export function InboxDashboard({
               borderRadius: "50%",
               background: "#22c55e",
               boxShadow: "0 0 8px #22c55e",
+              flexShrink: 0,
             }}
           />
           <span style={{ fontSize: 11, letterSpacing: 4, color: "#666" }}>
@@ -92,7 +109,7 @@ export function InboxDashboard({
         </div>
 
         {/* Stats */}
-        <div style={{ display: "flex", gap: 24 }}>
+        <div style={{ display: "flex", gap: 24, alignItems: "center" }}>
           {(
             [
               ["CRITICAL", criticalCount, "#ff2222"],
@@ -107,10 +124,17 @@ export function InboxDashboard({
               </div>
             </div>
           ))}
+
+          {/* Multi-account switcher */}
+          <AccountSwitcher
+            accounts={accounts}
+            activeAccountId={activeAccountId}
+            onSwitch={onAccountSwitch}
+          />
         </div>
       </div>
 
-      {/* ── Controls ── */}
+      {/* ── Filter / Sort controls ── */}
       <div
         style={{
           padding: "14px 28px",
@@ -128,7 +152,7 @@ export function InboxDashboard({
               key={f}
               onClick={() => onFilterChange(f as FilterBy)}
               style={{
-                ...STAT_BUTTON_BASE,
+                ...FILTER_BTN_BASE,
                 border: `1px solid ${active ? "#0078d4" : "#1e2124"}`,
                 background: active ? "#0078d420" : "transparent",
                 color: active ? "#0078d4" : "#555",
@@ -155,7 +179,7 @@ export function InboxDashboard({
                 key={s}
                 onClick={() => onSortChange(s as SortBy)}
                 style={{
-                  ...STAT_BUTTON_BASE,
+                  ...FILTER_BTN_BASE,
                   border: `1px solid ${active ? "#555" : "#1e2124"}`,
                   background: "transparent",
                   color: active ? "#aaa" : "#444",
@@ -170,9 +194,7 @@ export function InboxDashboard({
       </div>
 
       {/* ── Content ── */}
-      <div
-        style={{ maxWidth: 860, margin: "0 auto", padding: "24px 28px" }}
-      >
+      <div style={{ maxWidth: 860, margin: "0 auto", padding: "24px 28px" }}>
         {loading && (
           <div style={{ textAlign: "center", padding: 60, color: "#333" }}>
             <div
@@ -225,6 +247,9 @@ export function InboxDashboard({
             email={email}
             triage={triageMap[email.id]}
             index={i}
+            token={token}
+            onMarkAsRead={onMarkAsRead}
+            onDraftReply={onDraftReply}
           />
         ))}
 

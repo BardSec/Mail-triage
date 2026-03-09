@@ -11,6 +11,7 @@ A production-ready single-page application that connects to a user's Microsoft 3
 
 **Target user:** K-12 district technology director
 **Stack:** React 18 + TypeScript, Vite, IBM Plex Mono (inline styles — no CSS framework)
+**Backend:** FastAPI (Python) — proxies Claude calls, handles Graph webhooks, serves SSE
 **Auth:** Microsoft Entra ID implicit grant → Microsoft Graph
 **AI:** Anthropic Claude (`claude-sonnet-4-20250514`)
 
@@ -20,96 +21,140 @@ A production-ready single-page application that connects to a user's Microsoft 3
 
 ```
 Mail-triage/
-├── CLAUDE.md                  ← you are here
-├── .env.example               ← template for required env vars
-├── .env                       ← (gitignored) real secrets
+├── CLAUDE.md                      ← you are here
+├── .env.example                   ← frontend env var template
+├── .env                           ← (gitignored) real frontend secrets
 ├── .gitignore
 ├── package.json
-├── vite.config.ts
+├── vite.config.ts                 ← Vite + proxy: /api/* → localhost:8000
 ├── tsconfig.json
-├── index.html                 ← loads IBM Plex Mono font; defines CSS animations
+├── index.html                     ← loads IBM Plex Mono font; defines CSS animations
+├── backend/
+│   ├── main.py                    ← FastAPI app (triage proxy, draft-reply, SSE, webhooks)
+│   ├── requirements.txt
+│   └── .env.example               ← ANTHROPIC_API_KEY, GRAPH_CLIENT_STATE
 └── src/
-    ├── main.tsx               ← React DOM entry point
-    ├── App.tsx                ← root component; owns all state; orchestrates auth → fetch → triage
+    ├── main.tsx                   ← React DOM entry point
+    ├── App.tsx                    ← root; owns all state; orchestrates auth → fetch → triage
     ├── api/
-    │   ├── graph.ts           ← fetchEmails() — Microsoft Graph REST calls
-    │   └── claude.ts          ← triageEmail() — Anthropic API calls
+    │   ├── graph.ts               ← fetchEmails, fetchSingleEmail, markAsRead, fetchMe
+    │   └── claude.ts              ← triageEmail (backend proxy + direct fallback), draftReply
     ├── auth/
-    │   └── msal.ts            ← parseTokenFromHash(), buildAuthUrl()
+    │   └── msal.ts                ← buildAuthUrl, parseTokenFromHash, currentRedirectUri
     ├── components/
-    │   ├── LoginScreen.tsx    ← Entra ID credential form + OAuth redirect
-    │   ├── InboxDashboard.tsx ← header stats + filter/sort toolbar + card list
-    │   └── EmailCard.tsx      ← individual expandable email card
+    │   ├── LoginScreen.tsx        ← Entra ID credential form + OAuth redirect
+    │   ├── InboxDashboard.tsx     ← header stats + filter/sort toolbar + card list
+    │   ├── EmailCard.tsx          ← expandable card with mark-as-read + draft-reply actions
+    │   ├── ComposeModal.tsx       ← Claude-generated reply draft modal
+    │   └── AccountSwitcher.tsx    ← multi-account dropdown (add / switch accounts)
     ├── types/
-    │   └── index.ts           ← Email, TriageResult, Urgency, Category, FilterBy, SortBy
-    └── constants/
-        └── index.ts           ← CATEGORIES, URGENCY_COLORS, URGENCY_ORDER, filter/sort options
+    │   └── index.ts               ← Email, TriageResult, Account, Urgency, Category, ...
+    ├── constants/
+    │   └── index.ts               ← CATEGORIES, URGENCY_COLORS, URGENCY_ORDER, filter/sort options
+    └── utils/
+        ├── cache.ts               ← localStorage triage cache (24-hour TTL)
+        └── accounts.ts            ← localStorage/sessionStorage account persistence helpers
 ```
 
 ---
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and fill in real values before running:
-
+### Frontend (`.env`)
 ```bash
-VITE_CLIENT_ID=<Entra App Client ID>
-VITE_TENANT_ID=<Entra Directory Tenant ID>
-VITE_ANTHROPIC_API_KEY=<Anthropic API key>
+VITE_CLIENT_ID=<Entra App Client ID>       # optional — can be entered in the UI
+VITE_TENANT_ID=<Entra Directory Tenant ID> # optional — can be entered in the UI
+VITE_ANTHROPIC_API_KEY=<key>               # dev fallback only — not used when backend runs
 ```
 
-> **Security warning:** `VITE_*` variables are embedded in the browser bundle at build time.
-> The Anthropic API key is therefore visible to anyone who inspects the bundle.
-> **Never deploy to production this way.** Phase 2 calls for a backend proxy (FastAPI/Express) to keep the key server-side.
+### Backend (`backend/.env`)
+```bash
+ANTHROPIC_API_KEY=<Anthropic API key>      # kept server-side
+GRAPH_CLIENT_STATE=<random UUID>           # shared secret for Graph webhook verification
+```
+
+> **Security:** `VITE_*` variables are embedded in the browser bundle. `VITE_ANTHROPIC_API_KEY` is only used as a dev fallback when the backend is not running — never set it in production. The backend's `ANTHROPIC_API_KEY` never leaves the server.
+
+---
+
+## Running the Application
+
+```bash
+# Terminal 1 — Frontend
+npm install
+npm run dev                        # http://localhost:5173
+
+# Terminal 2 — Backend (required for reply drafting; optional for triage)
+cd backend
+pip install -r requirements.txt
+cp .env.example .env               # fill in ANTHROPIC_API_KEY
+uvicorn main:app --reload --port 8000
+```
+
+Vite proxies all `/api/*` requests to `http://localhost:8000` during development.
 
 ---
 
 ## Authentication Flow
 
 ```
-User fills in Client ID + Tenant ID
+User fills in Client ID + Tenant ID (or reads from .env)
         ↓
 buildAuthUrl() constructs Microsoft OAuth URL (implicit grant, response_type=token)
+        + optional `state` param (UUID) for multi-account identification
         ↓
 Browser redirects to login.microsoftonline.com
         ↓
-After consent, Microsoft redirects back to the app with #access_token=... in the hash
+After consent → redirected back with #access_token=...&expires_in=...&state=...
         ↓
-parseTokenFromHash() extracts the token; window.history.replaceState clears the hash
+parseTokenFromHash() extracts token + expiresIn + state
+window.history.replaceState clears the hash
         ↓
-App stores token in state → triggers email fetch
+fetchMe(token) → gets displayName + email from Graph /me
+        ↓
+Account stored in localStorage; set as active
 ```
 
-Key files: `src/auth/msal.ts`, `src/components/LoginScreen.tsx`, `src/App.tsx` (useEffect #1)
+### Multi-Account Flow (adding a second account)
+
+1. User clicks **+ ADD ACCOUNT** in the `AccountSwitcher` dropdown
+2. Enters Client ID + Tenant ID for the new account
+3. `savePendingAccount({id, clientId, tenantId})` written to sessionStorage
+4. OAuth redirect with `state=<pendingId>`
+5. On return: `loadAndClearPendingAccount()` matches the pending record → creates new Account
+6. Accounts array updated in localStorage; new account set as active
 
 ### Entra ID App Registration Requirements
 
-Before the auth flow works, the app must be registered in the Azure portal:
-
 - **Redirect URI type:** Single-page application (SPA)
-- **Redirect URI value:** `http://localhost:5173` (or the deployed URL)
+- **Redirect URI value:** `http://localhost:5173` (or deployed URL)
 - **Implicit grant:** Access tokens checkbox enabled
-- **API permissions:** Microsoft Graph → Delegated → `Mail.Read` (admin consent granted)
+- **API permissions:** Microsoft Graph → Delegated → `Mail.Read` + `Mail.ReadWrite` → admin consent
 
 ---
 
 ## Data Flow
 
 ```
-App.tsx useEffect (token set)
+App.tsx (activeAccountId changes)
   │
-  ├─→ fetchEmails(token)            [src/api/graph.ts]
+  ├─→ fetchEmails(token)              [graph.ts]   → Email[]
   │     GET /me/messages?$top=20&...
-  │     Returns Email[]
   │
   └─→ for each email (sequential):
-        triageEmail(email, apiKey)  [src/api/claude.ts]
-          POST https://api.anthropic.com/v1/messages
-          Returns TriageResult
-          setTriageMap(prev => ({ ...prev, [email.id]: result }))
-```
+        getCachedTriage(email.id)     [cache.ts]   → TriageResult | null
+        if cached → use it, skip Claude
+        else:
+          triageEmail(email)          [claude.ts]
+            1. POST /api/triage (backend proxy) → TriageResult
+            2. fallback: POST api.anthropic.com (dev only, VITE_ANTHROPIC_API_KEY)
+          setCachedTriage(email.id, result)
+          setTriageMap(...)
 
-Triage runs **sequentially** (not in parallel) to avoid rate-limit issues with the Anthropic API. Cards update progressively as each result arrives.
+SSE connection (/api/events):
+  Backend receives Graph change notification → pushes {type:"new_email", emailId}
+  Frontend fetchSingleEmail + triageEmail + prepend to list
+```
 
 ---
 
@@ -122,21 +167,21 @@ type Category = "Security Alert" | "Action Required" | "Vendor / Sales"
               | "Finance / Budget" | "Tech Support" | "General";
 
 interface Email {
-  id: string;
-  subject: string;
+  id: string; subject: string;
   from: { emailAddress: { name: string; address: string } };
-  receivedDateTime: string;   // ISO 8601
-  bodyPreview: string;
-  isRead: boolean;
-  importance: string;
+  receivedDateTime: string; bodyPreview: string;
+  isRead: boolean; importance: string;
 }
 
 interface TriageResult {
-  urgency: Urgency;
-  urgencyReason: string;      // one sentence
-  category: Category;
-  actionItems: string[];      // short action strings
-  summary: string;            // 2-sentence plain-English
+  urgency: Urgency; urgencyReason: string;
+  category: Category; actionItems: string[]; summary: string;
+}
+
+interface Account {
+  id: string; clientId: string; tenantId: string;
+  displayName: string; email: string;
+  token: string; tokenExpiry: number; // unix ms
 }
 ```
 
@@ -163,74 +208,71 @@ interface TriageResult {
 | Medium | `#eab308` |
 | Low | `#22c55e` |
 
-**No CSS framework is used.** All styling is done with React inline style objects. Two CSS animations are defined globally in `index.html`:
-- `fadeUp` — cards animate in on mount (staggered by `index * 60ms`)
-- `pulse` — used for pending/loading states
-
-Cards have a **colored left border** (3 px) matching their urgency level. Unread emails show a `#0078d4` dot indicator next to the category label.
+**No CSS framework.** All styling via React inline style objects. CSS animations (`fadeUp`, `pulse`) defined globally in `index.html`. Cards have a 3 px colored left border matching urgency level.
 
 ---
 
-## Claude API Integration (`src/api/claude.ts`)
+## Backend API Reference (`backend/main.py`)
 
-- **Model:** `claude-sonnet-4-20250514`
-- **Max tokens:** 1000
-- **Required headers:** `x-api-key`, `anthropic-version: 2023-06-01`, `anthropic-dangerous-direct-browser-access: true`
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/health` | Health check; confirms Anthropic is configured |
+| POST | `/api/triage` | Proxy: Claude email analysis → TriageResult JSON |
+| POST | `/api/draft-reply` | Proxy: Claude reply draft → `{ draft: string }` |
+| POST | `/api/subscriptions` | Create Graph change notification subscription |
+| GET/POST | `/api/webhooks/graph` | Graph webhook (validation handshake + notifications) |
+| GET | `/api/events` | SSE stream — pushes `{type:"new_email", emailId}` events |
 
-The system prompt instructs Claude to respond **only with valid JSON** — no markdown fences, no explanation. If JSON parsing fails, `triageEmail()` returns a safe fallback result (Medium urgency, General category) rather than throwing.
-
-Claude's JSON schema:
-```json
-{
-  "urgency": "Critical|High|Medium|Low",
-  "urgencyReason": "<one sentence>",
-  "category": "<one of 9 categories>",
-  "actionItems": ["<short action>"],
-  "summary": "<two sentences>"
-}
-```
-
----
-
-## Development Workflow
+### Webhook / Real-time Setup (ngrok required for dev)
 
 ```bash
-# Install dependencies
-npm install
+# 1. Expose backend to the internet
+ngrok http 8000
 
-# Start dev server (http://localhost:5173)
-npm run dev
+# 2. Create Graph subscription via the frontend (or curl):
+curl -X POST http://localhost:5173/api/subscriptions \
+  -H "Content-Type: application/json" \
+  -d '{"graph_token": "<user-token>", "notification_url": "https://<ngrok-id>.ngrok.io/api/webhooks/graph"}'
 
-# Type-check without building
-npm run typecheck
-
-# Production build (outputs to dist/)
-npm run build
+# Subscription expires in 3 days. Re-create as needed.
 ```
 
 ---
 
 ## Conventions
 
-- **State lives in `App.tsx`.** Child components receive data and callbacks as props — no context or external state library.
-- **No default exports from components** (except `App`). Named exports only: `export function EmailCard(...)`.
-- **API keys come from `import.meta.env`** prefixed with `VITE_`. Never hard-code credentials.
-- **Inline styles over class names.** Keep style objects close to the element; extract to a `const` only when reused within the same file.
-- **Type everything.** Avoid `any`. The `triageEmail` response is the main boundary — cast to `TriageResult` after parsing.
-- **Sequential triage, not concurrent.** The `for...of` loop in `App.tsx` is intentional — do not refactor to `Promise.all`.
+- **State lives in `App.tsx`.** Child components are pure — they receive data + callbacks as props.
+- **No default exports from components** (except `App`). Use named exports: `export function EmailCard(...)`.
+- **API keys come from `import.meta.env`** (frontend) or `os.environ` (backend). Never hard-code.
+- **Inline styles over class names.** Extract to a `const` only when reused within the same file.
+- **Type everything.** Avoid `any`. External API responses are cast after parsing.
+- **Sequential triage, not concurrent.** The `for...of` loop in `App.tsx` is intentional — do not refactor to `Promise.all` (rate limits).
+- **Cache check before Claude call.** Always call `getCachedTriage` before `triageEmail` in the triage loop.
+- **SSE handler uses a ref.** `activeAccountRef` lets the SSE `onmessage` handler read the latest token without re-subscribing on every token change.
 
 ---
 
-## Phase 2 Roadmap (Not Yet Implemented)
+## localStorage / sessionStorage Keys
 
-| Feature | Notes |
-|---|---|
-| Backend proxy | FastAPI or Express service; moves `VITE_ANTHROPIC_API_KEY` off the client |
-| Reply drafting | "Draft Reply" button per card; Claude generates suggested response |
-| Mark as read | `PATCH /me/messages/{id}` via Graph API |
-| Persistent triage cache | localStorage or SQLite so re-runs skip already-triaged emails |
-| Webhook / real-time | Microsoft Graph change notifications |
-| Multi-account | Support multiple M365 tenants |
+| Key | Store | Purpose |
+|---|---|---|
+| `inbox-triage:accounts` | localStorage | JSON array of all Account objects |
+| `inbox-triage:active-account-id` | localStorage | Currently active account UUID |
+| `inbox-triage:triage:<emailId>` | localStorage | Cached TriageResult (24-hour TTL) |
+| `inbox-triage:pending-account` | sessionStorage | In-progress OAuth account (cleared after redirect) |
+
+---
+
+## Phase 2 Features (Implemented)
+
+| Feature | Status | Key Files |
+|---|---|---|
+| Backend proxy (API key off client) | ✅ Done | `backend/main.py`, `claude.ts`, `vite.config.ts` |
+| Reply drafting | ✅ Done | `ComposeModal.tsx`, `claude.ts#draftReply`, `/api/draft-reply` |
+| Mark as read | ✅ Done | `EmailCard.tsx`, `graph.ts#markAsRead` |
+| Persistent triage cache | ✅ Done | `utils/cache.ts` (localStorage, 24-hour TTL) |
+| Webhook / real-time | ✅ Done | `/api/webhooks/graph`, `/api/events`, SSE in `App.tsx` |
+| Multi-account | ✅ Done | `AccountSwitcher.tsx`, `utils/accounts.ts`, OAuth `state` param |
 
 ---
 

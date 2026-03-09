@@ -1,11 +1,15 @@
 import { useState } from "react";
 import { CATEGORIES, URGENCY_COLORS } from "../constants";
+import { markAsRead } from "../api/graph";
 import type { Email, TriageResult } from "../types";
 
 interface EmailCardProps {
   email: Email;
   triage: TriageResult | undefined;
   index: number;
+  token: string;
+  onMarkAsRead: (emailId: string) => void;
+  onDraftReply: (email: Email, triage: TriageResult) => void;
 }
 
 function formatDate(iso: string): string {
@@ -17,12 +21,37 @@ function formatDate(iso: string): string {
   });
 }
 
-export function EmailCard({ email, triage, index }: EmailCardProps) {
+export function EmailCard({
+  email,
+  triage,
+  index,
+  token,
+  onMarkAsRead,
+  onDraftReply,
+}: EmailCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [markingRead, setMarkingRead] = useState(false);
 
   const urgencyColor = triage ? URGENCY_COLORS[triage.urgency] : "#555";
   const cat = triage?.category ? CATEGORIES[triage.category] : CATEGORIES["General"];
   const isPending = !triage;
+
+  async function handleMarkAsRead(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (email.isRead || markingRead) return;
+    setMarkingRead(true);
+    try {
+      await markAsRead(email.id, token);
+      onMarkAsRead(email.id);
+    } finally {
+      setMarkingRead(false);
+    }
+  }
+
+  function handleDraftReply(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (triage) onDraftReply(email, triage);
+  }
 
   return (
     <div
@@ -164,7 +193,7 @@ export function EmailCard({ email, triage, index }: EmailCardProps) {
 
           {/* Action items */}
           {triage.actionItems.length > 0 && (
-            <div>
+            <div style={{ marginBottom: 16 }}>
               <div
                 style={{
                   fontSize: 9,
@@ -185,14 +214,65 @@ export function EmailCard({ email, triage, index }: EmailCardProps) {
                     alignItems: "flex-start",
                   }}
                 >
-                  <span style={{ color: "#0078d4", fontSize: 10, marginTop: 2 }}>
-                    ◆
-                  </span>
+                  <span style={{ color: "#0078d4", fontSize: 10, marginTop: 2 }}>◆</span>
                   <span style={{ fontSize: 12, color: "#ccc" }}>{item}</span>
                 </div>
               ))}
             </div>
           )}
+
+          {/* Action buttons */}
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              paddingTop: 12,
+              borderTop: "1px solid #131518",
+            }}
+          >
+            {!email.isRead && (
+              <button
+                onClick={handleMarkAsRead}
+                disabled={markingRead}
+                style={{
+                  padding: "6px 14px",
+                  background: "transparent",
+                  border: "1px solid #222",
+                  borderRadius: 3,
+                  color: markingRead ? "#333" : "#666",
+                  fontSize: 10,
+                  fontFamily: "inherit",
+                  letterSpacing: 1.5,
+                  cursor: markingRead ? "default" : "pointer",
+                }}
+              >
+                {markingRead ? "MARKING..." : "MARK AS READ"}
+              </button>
+            )}
+            <button
+              onClick={handleDraftReply}
+              style={{
+                padding: "6px 14px",
+                background: "transparent",
+                border: "1px solid #0078d440",
+                borderRadius: 3,
+                color: "#0078d4",
+                fontSize: 10,
+                fontFamily: "inherit",
+                letterSpacing: 1.5,
+                cursor: "pointer",
+                transition: "border-color 0.15s",
+              }}
+              onMouseEnter={(e) =>
+                ((e.currentTarget as HTMLButtonElement).style.borderColor = "#0078d4")
+              }
+              onMouseLeave={(e) =>
+                ((e.currentTarget as HTMLButtonElement).style.borderColor = "#0078d440")
+              }
+            >
+              DRAFT REPLY
+            </button>
+          </div>
         </div>
       )}
 
