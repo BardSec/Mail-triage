@@ -1,0 +1,42 @@
+services:
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    env_file:
+      # Copy backend/.env.example → backend/.env and fill in your keys.
+      - ./backend/.env
+    environment:
+      # Allow the frontend nginx container to call the backend.
+      # Add your public domain here if deploying behind a reverse proxy.
+      - CORS_ORIGINS=http://localhost,http://localhost:80,http://frontend
+    restart: unless-stopped
+    # Expose port 8000 on the host for direct access / debugging.
+    # Remove this in production if you only want nginx to reach the backend.
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── React/Vite frontend served by nginx ─────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Optional: pre-fill the Client ID / Tenant ID fields in the UI.
+        # If omitted, users enter credentials manually on the login screen.
+        VITE_CLIENT_ID: ${VITE_CLIENT_ID:-}
+        VITE_TENANT_ID: ${VITE_TENANT_ID:-}
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
