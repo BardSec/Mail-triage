@@ -385,10 +385,10 @@ Open the app URL in your browser. You should see the Inbox Triage login screen w
 
 - Confirm `Mail.Read` and `Mail.ReadWrite` delegated permissions are added and admin consent has been granted.
 
-### Docker build fails on `npm ci`
+### Docker build fails on `npm ci` / missing package-lock.json
 
-- Ensure `package-lock.json` is committed to the repository.
-- Run `npm install` locally first to generate it, then rebuild.
+- The Dockerfile uses `npm install`, which does not require a lock file.
+- If you see this error, make sure you are using the latest version of the Dockerfile from this repository.
 
 ### Frontend shows but API calls return 502 Bad Gateway
 
