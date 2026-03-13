@@ -2,6 +2,24 @@ import type { Account, Email } from "../types";
 
 const GRAPH_BASE = "https://graph.microsoft.com/v1.0";
 
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  attempts = 3
+): Promise<Response> {
+  let delay = 1000;
+  for (let i = 0; i < attempts; i++) {
+    const res = await fetch(url, options);
+    if (res.ok || !RETRYABLE.has(res.status) || i === attempts - 1) return res;
+    await new Promise((r) => setTimeout(r, delay));
+    delay *= 2;
+  }
+  // unreachable, but satisfies TS
+  return fetch(url, options);
+}
+
 const LIST_ENDPOINT =
   `${GRAPH_BASE}/me/messages` +
   "?$top=20" +
@@ -17,7 +35,7 @@ function authHeader(token: string) {
  * Requires the Mail.Read delegated permission.
  */
 export async function fetchEmails(token: string): Promise<Email[]> {
-  const res = await fetch(LIST_ENDPOINT, { headers: authHeader(token) });
+  const res = await fetchWithRetry(LIST_ENDPOINT, { headers: authHeader(token) });
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -39,7 +57,7 @@ export async function fetchSingleEmail(
     `${GRAPH_BASE}/me/messages/${emailId}` +
     "?$select=id,subject,from,receivedDateTime,bodyPreview,isRead,importance";
 
-  const res = await fetch(url, { headers: authHeader(token) });
+  const res = await fetchWithRetry(url, { headers: authHeader(token) });
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
