@@ -35,7 +35,7 @@ services:
         VITE_CLIENT_ID: ${VITE_CLIENT_ID:-}
         VITE_TENANT_ID: ${VITE_TENANT_ID:-}
     ports:
-      - "80:80"
+      - "${FRONTEND_PORT:-80}:80"
     depends_on:
       backend:
         condition: service_healthy

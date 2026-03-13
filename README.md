@@ -398,4 +398,10 @@ Open the app URL in your browser. You should see the Inbox Triage login screen w
 
 ### Port 80 already in use
 
-Edit `docker-compose.yml` and change `"80:80"` to another port, e.g. `"8080:80"`, then access the app at `http://localhost:8080`.
+Set `FRONTEND_PORT` in your `.env` file to any free port:
+
+```bash
+FRONTEND_PORT=8080
+```
+
+Then rebuild: `docker compose up -d --build`. Access the app at `http://localhost:8080`.
